@@ -79,6 +79,7 @@ lefthk = ["dep:lefthk-core"]
 # backends
 x11rb = ['dep:x11rb-display-server']
 xlib = ['dep:xlib-display-server']
+smithay = ['dep:smithay-display-server']
 
 # logging features
 journald-log = ["dep:tracing-journald"]

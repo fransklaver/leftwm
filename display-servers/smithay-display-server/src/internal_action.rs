@@ -1,8 +1,11 @@
-use leftwm_core::DisplayAction;
+use leftwm_core::{DisplayAction, Window};
+
+use crate::SmithayWindowHandle;
 
 #[derive(Debug)]
 pub enum InternalAction {
     Flush,
     GenerateVerifyFocusEvent,
-    DisplayAction(DisplayAction),
+    UpdateWindows(Vec<Window<SmithayWindowHandle>>),
+    DisplayAction(DisplayAction<SmithayWindowHandle>),
 }

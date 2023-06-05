@@ -1,11 +1,12 @@
-use std::{sync::atomic::Ordering, time::Duration};
+use std::{process::Command, sync::atomic::Ordering, time::Duration};
 
 use event_channel::EventChannelReceiver;
 use internal_action::InternalAction;
-use leftwm_core::{DisplayAction, DisplayEvent, DisplayServer};
+use leftwm_core::{models::Handle, DisplayAction, DisplayEvent, DisplayServer, Window};
+use serde::{Deserialize, Serialize};
 use smithay::{
     backend::{
-        input::{Event, InputEvent, KeyboardKeyEvent},
+        input::{Event, InputEvent, KeyState, KeyboardKeyEvent},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::UdevBackend,
@@ -30,15 +31,21 @@ mod drawing;
 mod event_channel;
 mod handlers;
 mod internal_action;
+mod managed_window;
 mod state;
 mod udev;
+mod window_registry;
 
-pub struct SmithayHandle {
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SmithayWindowHandle(window_registry::WindowHandle);
+impl Handle for SmithayWindowHandle {}
+
+pub struct SmithayDisplayServer {
     event_receiver: EventChannelReceiver,
     action_sender: CalloopSender<InternalAction>,
 }
 
-impl DisplayServer for SmithayHandle {
+impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
     fn new(config: &impl leftwm_core::Config) -> Self {
         let (event_sender, event_receiver) = event_channel::event_channel();
         let (init_notify_sender, init_notify_reciever) = oneshot::channel::<()>();
@@ -87,23 +94,38 @@ impl DisplayServer for SmithayHandle {
                                 event.state(),
                                 serial,
                                 time,
-                                |_, modifiers, handle| {
-                                    let mut leds = Led::empty();
-                                    if modifiers.caps_lock {
-                                        leds.insert(Led::CAPSLOCK);
-                                    }
-                                    if modifiers.num_lock {
-                                        leds.insert(Led::NUMLOCK);
-                                    }
-                                    event.device().led_update(leds);
-                                    if (xkb::KEY_XF86Switch_VT_1..=xkb::KEY_XF86Switch_VT_12)
-                                        .contains(&handle.modified_sym())
-                                    {
-                                        // VTSwitch
-                                        let vt = (handle.modified_sym() - xkb::KEY_XF86Switch_VT_1
-                                            + 1)
-                                            as i32;
-                                        return FilterResult::Intercept(vt);
+                                |state, modifiers, handle| {
+                                    if event.state() == KeyState::Pressed {
+                                        let mut leds = Led::empty();
+                                        if modifiers.caps_lock {
+                                            leds.insert(Led::CAPSLOCK);
+                                        }
+                                        if modifiers.num_lock {
+                                            leds.insert(Led::NUMLOCK);
+                                        }
+                                        event.device().led_update(leds);
+                                        if modifiers.logo
+                                            && modifiers.shift
+                                            && handle.modified_sym() == xkb::KEY_Return
+                                        {
+                                            Command::new("weston-terminal").spawn().unwrap();
+                                        } else if modifiers.logo
+                                            && modifiers.shift
+                                            && handle.modified_sym() == xkb::KEY_Q
+                                        {
+                                            info!("Exiting");
+                                            state.running.store(false, Ordering::SeqCst);
+                                        } else if (xkb::KEY_XF86Switch_VT_1
+                                            ..=xkb::KEY_XF86Switch_VT_12)
+                                            .contains(&handle.modified_sym())
+                                        {
+                                            // VTSwitch
+                                            let vt = (handle.modified_sym()
+                                                - xkb::KEY_XF86Switch_VT_1
+                                                + 1)
+                                                as i32;
+                                            return FilterResult::Intercept(vt);
+                                        }
                                     }
                                     FilterResult::Forward
                                 },
@@ -168,15 +190,45 @@ impl DisplayServer for SmithayHandle {
                 .handle()
                 .insert_source(action_reciever, |event, _, data| match event {
                     channel::Event::Msg(act) => {
-                        info!("Recieved action from leftwm: {:?}", act);
+                        info!("Received action from leftwm: {:#?}", act);
                         match act {
                             InternalAction::Flush => data.display.flush_clients().unwrap(),
                             InternalAction::GenerateVerifyFocusEvent => (), //TODO: implement
+                            InternalAction::UpdateWindows(windows) => {
+                                for window in windows {
+                                    let managed_window =
+                                        data.state.window_registry.get(window.handle.0 .0).unwrap();
+                                    data.state.space.map_element(
+                                        managed_window.clone(),
+                                        (window.x(), window.y()),
+                                        true,
+                                    );
+                                    managed_window
+                                        .window
+                                        .toplevel()
+                                        .with_pending_state(|state| {
+                                            state.size =
+                                                Some((window.width(), window.height()).into());
+                                        });
+                                    managed_window.window.toplevel().send_configure();
+                                }
+                            }
                             InternalAction::DisplayAction(DisplayAction::KillWindow(_)) => {
                                 todo!()
                             }
-                            InternalAction::DisplayAction(DisplayAction::AddedWindow(_, _, _)) => {
-                                todo!()
+                            InternalAction::DisplayAction(DisplayAction::AddedWindow(
+                                handle,
+                                floating,
+                                focus,
+                            )) => {
+                                let window =
+                                    data.state.window_registry.get_mut(handle.0 .0).unwrap();
+                                window.floating = floating;
+                                window.managed = true;
+                                if focus {
+                                    data.state.window_registry.clear_focus();
+                                    data.state.focus_window(handle.0 .0);
+                                }
                             }
                             InternalAction::DisplayAction(DisplayAction::MoveMouseOver(_, _)) => {
                                 todo!()
@@ -187,8 +239,8 @@ impl DisplayServer for SmithayHandle {
                             InternalAction::DisplayAction(DisplayAction::SetState(_, _, _)) => {
                                 todo!()
                             }
-                            InternalAction::DisplayAction(DisplayAction::SetWindowOrder(_, _)) => {
-                                todo!()
+                            InternalAction::DisplayAction(DisplayAction::SetWindowOrder(_)) => {
+                                //TODO: no `todo!()` here because crash
                             }
                             InternalAction::DisplayAction(DisplayAction::MoveToTop(_)) => {
                                 todo!()
@@ -197,9 +249,19 @@ impl DisplayServer for SmithayHandle {
                                 todo!()
                             }
                             InternalAction::DisplayAction(DisplayAction::WindowTakeFocus {
-                                ..
+                                window,
+                                previous_window,
                             }) => {
-                                todo!()
+                                data.state.focus_window(window.handle.0 .0);
+                                if let Some(prev_window) = previous_window {
+                                    data.state
+                                        .window_registry
+                                        .get_mut(prev_window.handle.0 .0)
+                                        .and_then(|w| {
+                                            w.focused = false;
+                                            Some(w)
+                                        });
+                                }
                             }
                             InternalAction::DisplayAction(DisplayAction::Unfocus(_, _)) => {
                                 todo!()
@@ -207,7 +269,7 @@ impl DisplayServer for SmithayHandle {
                             InternalAction::DisplayAction(
                                 DisplayAction::FocusWindowUnderCursor,
                             ) => {
-                                todo!()
+                                //TODO: no `todo!()` here because crash
                             }
                             InternalAction::DisplayAction(DisplayAction::ReplayClick(_, _)) => {
                                 todo!()
@@ -221,10 +283,15 @@ impl DisplayServer for SmithayHandle {
                                 todo!()
                             }
                             InternalAction::DisplayAction(DisplayAction::SetCurrentTags(_)) => {
-                                todo!()
+                                //TODO: no `todo!()` here because crash
                             }
-                            InternalAction::DisplayAction(DisplayAction::SetWindowTag(_, _)) => {
-                                todo!()
+                            InternalAction::DisplayAction(DisplayAction::SetWindowTag(
+                                handle,
+                                tag,
+                            )) => {
+                                let window =
+                                    data.state.window_registry.get_mut(handle.0 .0).unwrap();
+                                window.tag = tag;
                             }
                             InternalAction::DisplayAction(DisplayAction::NormalMode) => {
                                 todo!()
@@ -261,6 +328,8 @@ impl DisplayServer for SmithayHandle {
             }
         });
 
+        std::env::set_var("XDG_SESSION_TYPE", "wayland");
+
         init_notify_reciever.blocking_recv().unwrap();
 
         Self {
@@ -269,7 +338,7 @@ impl DisplayServer for SmithayHandle {
         }
     }
 
-    fn get_next_events(&mut self) -> Vec<DisplayEvent> {
+    fn get_next_events(&mut self) -> Vec<DisplayEvent<SmithayWindowHandle>> {
         info!("LeftWM is collecting events");
         self.event_receiver.collect_events()
     }
@@ -284,26 +353,34 @@ impl DisplayServer for SmithayHandle {
         self.action_sender.send(InternalAction::Flush).unwrap();
     }
 
-    fn generate_verify_focus_event(&self) -> Option<DisplayEvent> {
+    fn generate_verify_focus_event(&self) -> Option<DisplayEvent<SmithayWindowHandle>> {
         self.action_sender
             .send(InternalAction::GenerateVerifyFocusEvent)
             .unwrap();
         None
     }
 
-    fn load_config(
+    fn update_windows(&self, windows: Vec<&Window<SmithayWindowHandle>>) {
+        let windows = windows.into_iter().map(|w| w.clone()).collect();
+        self.action_sender
+            .send(InternalAction::UpdateWindows(windows))
+            .unwrap()
+    }
+
+    fn reload_config(
         &mut self,
         _config: &impl leftwm_core::Config,
-        _focused: Option<&Option<leftwm_core::models::WindowHandle>>,
-        _windows: &[leftwm_core::Window],
+        _focused: Option<leftwm_core::models::WindowHandle<SmithayWindowHandle>>,
+        _windows: &[leftwm_core::Window<SmithayWindowHandle>],
     ) {
     }
 
-    fn update_windows(&self, _windows: Vec<&leftwm_core::Window>) {}
-
     fn update_workspaces(&self, _focused: Option<&leftwm_core::Workspace>) {}
 
-    fn execute_action(&mut self, act: DisplayAction) -> Option<DisplayEvent> {
+    fn execute_action(
+        &mut self,
+        act: DisplayAction<SmithayWindowHandle>,
+    ) -> Option<DisplayEvent<SmithayWindowHandle>> {
         self.action_sender
             .send(InternalAction::DisplayAction(act))
             .unwrap();
