@@ -25,13 +25,18 @@ use smithay::{
 use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 
-use crate::state::{CalloopData, SmithayState};
-mod cursor;
+use crate::{
+    leftwm_config::LeftwmConfig,
+    state::{CalloopData, SmithayState},
+};
 mod drawing;
 mod event_channel;
 mod handlers;
+mod input_handler;
 mod internal_action;
+mod leftwm_config;
 mod managed_window;
+mod pointer;
 mod state;
 mod udev;
 mod window_registry;
@@ -51,6 +56,11 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
         let (init_notify_sender, init_notify_reciever) = oneshot::channel::<()>();
         let (action_sender, action_reciever) = channel::channel::<InternalAction>();
 
+        let config = LeftwmConfig {
+            focus_behavior: config.focus_behaviour(),
+            sloppy_mouse_follows_focus: config.sloppy_mouse_follows_focus(),
+        };
+
         std::thread::spawn(move || {
             let mut event_loop = EventLoop::<CalloopData>::try_new().unwrap();
             let mut display = Display::<SmithayState>::new().unwrap();
@@ -61,6 +71,7 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                 event_sender,
                 &mut display,
                 udev::init_udev_stage_1(session),
+                config,
                 event_loop.handle(),
                 event_loop.get_signal(),
             );
@@ -108,7 +119,7 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                                             && modifiers.shift
                                             && handle.modified_sym() == xkb::KEY_Return
                                         {
-                                            Command::new("weston-terminal").spawn().unwrap();
+                                            Command::new("kitty").spawn().unwrap();
                                         } else if modifiers.logo
                                             && modifiers.shift
                                             && handle.modified_sym() == xkb::KEY_Q
@@ -132,6 +143,14 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                             ) {
                                 calloopdata.state.udev_data.session.change_vt(vt).unwrap();
                             };
+                        }
+                        InputEvent::PointerMotion { event } => {
+                            calloopdata
+                                .state
+                                .on_pointer_move::<LibinputInputBackend>(event);
+                        }
+                        InputEvent::PointerMotionAbsolute { event } => {
+                            todo!()
                         }
                         InputEvent::DeviceAdded { mut device } => {
                             device.config_tap_set_enabled(true).ok();
@@ -198,6 +217,7 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                                 for window in windows {
                                     let managed_window =
                                         data.state.window_registry.get(window.handle.0 .0).unwrap();
+                                    data.state.space.unmap_elem(managed_window);
                                     data.state.space.map_element(
                                         managed_window.clone(),
                                         (window.x(), window.y()),
@@ -226,8 +246,7 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                                 window.floating = floating;
                                 window.managed = true;
                                 if focus {
-                                    data.state.window_registry.clear_focus();
-                                    data.state.focus_window(handle.0 .0);
+                                    data.state.focus_window(handle.0 .0, true);
                                 }
                             }
                             InternalAction::DisplayAction(DisplayAction::MoveMouseOver(_, _)) => {
@@ -250,18 +269,12 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                             }
                             InternalAction::DisplayAction(DisplayAction::WindowTakeFocus {
                                 window,
-                                previous_window,
+                                previous_window: _,
                             }) => {
-                                data.state.focus_window(window.handle.0 .0);
-                                if let Some(prev_window) = previous_window {
-                                    data.state
-                                        .window_registry
-                                        .get_mut(prev_window.handle.0 .0)
-                                        .and_then(|w| {
-                                            w.focused = false;
-                                            Some(w)
-                                        });
-                                }
+                                data.state.focus_window(
+                                    window.handle.0 .0,
+                                    data.state.config.sloppy_mouse_follows_focus,
+                                );
                             }
                             InternalAction::DisplayAction(DisplayAction::Unfocus(_, _)) => {
                                 todo!()
@@ -269,7 +282,7 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                             InternalAction::DisplayAction(
                                 DisplayAction::FocusWindowUnderCursor,
                             ) => {
-                                //TODO: no `todo!()` here because crash
+                                data.state.focus_window_under();
                             }
                             InternalAction::DisplayAction(DisplayAction::ReplayClick(_, _)) => {
                                 todo!()
