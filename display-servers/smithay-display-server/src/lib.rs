@@ -23,7 +23,7 @@ use smithay::{
     utils::SERIAL_COUNTER,
 };
 use tokio::sync::oneshot;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     leftwm_config::LeftwmConfig,
@@ -41,6 +41,10 @@ mod state;
 mod udev;
 mod window_registry;
 
+// FIXME: For some reason windows are placed at an offset, I have now idea why. This const corrects
+// for that offset.
+const OFFSET: i32 = 10;
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SmithayWindowHandle(window_registry::WindowHandle);
 impl Handle for SmithayWindowHandle {}
@@ -53,8 +57,8 @@ pub struct SmithayDisplayServer {
 impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
     fn new(config: &impl leftwm_core::Config) -> Self {
         let (event_sender, event_receiver) = event_channel::event_channel();
-        let (init_notify_sender, init_notify_reciever) = oneshot::channel::<()>();
-        let (action_sender, action_reciever) = channel::channel::<InternalAction>();
+        let (init_notify_sender, init_notify_receiver) = oneshot::channel::<()>();
+        let (action_sender, action_receiver) = channel::channel::<InternalAction>();
 
         let config = LeftwmConfig {
             focus_behavior: config.focus_behaviour(),
@@ -207,21 +211,24 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
 
             event_loop
                 .handle()
-                .insert_source(action_reciever, |event, _, data| match event {
+                .insert_source(action_receiver, |event, _, data| match event {
                     channel::Event::Msg(act) => {
-                        info!("Received action from leftwm: {:#?}", act);
+                        // info!("Received action from leftwm: {:#?}", act);
                         match act {
                             InternalAction::Flush => data.display.flush_clients().unwrap(),
                             InternalAction::GenerateVerifyFocusEvent => (), //TODO: implement
                             InternalAction::UpdateWindows(windows) => {
+                                info!("Received window update: {:#?}", windows);
                                 for window in windows {
                                     let managed_window =
                                         data.state.window_registry.get(window.handle.0 .0).unwrap();
                                     data.state.space.unmap_elem(managed_window);
                                     data.state.space.map_element(
                                         managed_window.clone(),
-                                        (window.x(), window.y()),
-                                        true,
+                                        // FIXME: For some reason windows are placed at an offset,
+                                        // I have now idea why
+                                        (window.x() - OFFSET, window.y() - OFFSET),
+                                        false,
                                     );
                                     managed_window
                                         .window
@@ -243,8 +250,10 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                             )) => {
                                 let window =
                                     data.state.window_registry.get_mut(handle.0 .0).unwrap();
-                                window.floating = floating;
-                                window.managed = true;
+                                let mut window_data = window.data.write().unwrap();
+                                window_data.floating = floating;
+                                window_data.managed = true;
+                                drop(window_data);
                                 if focus {
                                     data.state.focus_window(handle.0 .0, true);
                                 }
@@ -302,9 +311,10 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                                 handle,
                                 tag,
                             )) => {
+                                info!("Setting tag {:?} for window {:?}", tag, handle);
                                 let window =
                                     data.state.window_registry.get_mut(handle.0 .0).unwrap();
-                                window.tag = tag;
+                                window.data.write().unwrap().tag = tag;
                             }
                             InternalAction::DisplayAction(DisplayAction::NormalMode) => {
                                 todo!()
@@ -343,7 +353,7 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
 
         std::env::set_var("XDG_SESSION_TYPE", "wayland");
 
-        init_notify_reciever.blocking_recv().unwrap();
+        init_notify_receiver.blocking_recv().unwrap();
 
         Self {
             event_receiver,
