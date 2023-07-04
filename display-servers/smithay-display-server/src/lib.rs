@@ -43,7 +43,7 @@ mod window_registry;
 
 // FIXME: For some reason windows are placed at an offset, I have now idea why. This const corrects
 // for that offset.
-const OFFSET: i32 = 10;
+const OFFSET: i32 = 11;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SmithayWindowHandle(window_registry::WindowHandle);
