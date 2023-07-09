@@ -36,6 +36,7 @@ mod internal_action;
 mod leftwm_config;
 mod managed_window;
 mod pointer;
+mod protocols;
 mod state;
 mod udev;
 mod window_registry;
@@ -211,7 +212,7 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                                 surface.compositor.reset_buffers();
                                 data.state.loop_handle.insert_idle(move |data| {
                                     if let Some(SwapBuffersError::ContextLost(_)) =
-                                        data.state.render(node, crtc).err()
+                                        data.state.render(node, crtc, None).err()
                                     {
                                         panic!("Device context lost ({})", node);
                                     }
