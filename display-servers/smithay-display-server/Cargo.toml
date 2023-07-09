@@ -12,6 +12,7 @@ xcursor = "0.3.4"
 tokio = { version = "1.2.0", features = [ "sync" ] }
 nohash-hasher = "0.2.0"
 serde = { version = "1.0.228", features = ["derive"] }
+read_color = "1.0.0"
 
 [dependencies.smithay]
 git = "https://github.com/Smithay/smithay.git"
