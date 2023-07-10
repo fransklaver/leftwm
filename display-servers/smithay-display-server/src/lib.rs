@@ -3,7 +3,9 @@ use std::{process::Command, sync::atomic::Ordering, time::Duration};
 use event_channel::EventChannelReceiver;
 use internal_action::InternalAction;
 use leftwm_config::{BorderConfig, LeftwmConfig};
-use leftwm_core::{models::Handle, DisplayAction, DisplayEvent, DisplayServer, Window};
+use leftwm_core::{
+    models::Handle, models::WindowHandle, DisplayAction, DisplayEvent, DisplayServer, Window,
+};
 use serde::{Deserialize, Serialize};
 use smithay::{
     backend::{
@@ -73,8 +75,6 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                     .map_or([255, 0, 0].into(), Into::into),
             },
         };
-
-        debug!("{:#?}", config.borders);
 
         std::thread::spawn(move || {
             let mut event_loop = EventLoop::<CalloopData>::try_new().unwrap();
@@ -232,7 +232,15 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                         // info!("Received action from leftwm: {:#?}", act);
                         match act {
                             InternalAction::Flush => data.display.flush_clients().unwrap(),
-                            InternalAction::GenerateVerifyFocusEvent => (), //TODO: implement
+                            InternalAction::GenerateVerifyFocusEvent => {
+                                if let Some(handle) = data.state.focused_window {
+                                    data.state
+                                        .send_event(DisplayEvent::VerifyFocusedAt(WindowHandle(
+                                            SmithayWindowHandle(handle),
+                                        )))
+                                        .unwrap();
+                                }
+                            } //NOTE: We should probably send an event too when nothing is focused
                             InternalAction::UpdateConfig(config) => data.state.config = config,
                             InternalAction::UpdateWindows(windows) => {
                                 info!("Received window update: {:#?}", windows);
@@ -248,13 +256,11 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                                     let loc =
                                         (window.x() + border_width, window.y() + border_width)
                                             .into();
-                                    debug!("Window Pos: {:?}", loc);
                                     let size = (
                                         window.width() - 2 * border_width,
                                         window.height() - 2 * border_width,
                                     )
                                         .into();
-                                    debug!("Window Size: {:?}", size);
                                     managed_window.set_geometry(Rectangle { loc, size });
 
                                     let mut managed_window_data =
@@ -435,7 +441,6 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                     .map_or([255, 0, 0].into(), Into::into),
             },
         };
-        debug!("{:#?}", config.borders);
         self.action_sender
             .send(InternalAction::UpdateConfig(config))
             .unwrap();
