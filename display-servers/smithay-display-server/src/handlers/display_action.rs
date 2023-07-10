@@ -1,5 +1,8 @@
 use leftwm_core::{models::WindowHandle, DisplayAction, DisplayEvent};
-use smithay::{reexports::wayland_server::Display, utils::Rectangle};
+use smithay::{
+    reexports::wayland_server::Display,
+    utils::{Logical, Point, Rectangle},
+};
 use tracing::info;
 
 use crate::{internal_action::InternalAction, state::SmithayState, SmithayWindowHandle};
@@ -47,8 +50,11 @@ impl SmithayState {
                     managed_window.window.toplevel().send_configure();
                 }
             }
-            InternalAction::DisplayAction(DisplayAction::KillWindow(_)) => {
-                todo!()
+            InternalAction::DisplayAction(DisplayAction::KillWindow(handle)) => {
+                let handle = handle.0 .0;
+                let window = self.window_registry.get_mut(handle);
+                //NOTE: Nothing happens if the window doesnt exist;
+                window.map(|w| w.toplevel().send_close());
             }
             InternalAction::DisplayAction(DisplayAction::AddedWindow(handle, floating, focus)) => {
                 let window = self.window_registry.get_mut(handle.0 .0).unwrap();
@@ -60,11 +66,18 @@ impl SmithayState {
                     self.focus_window(handle.0 .0, true);
                 }
             }
-            InternalAction::DisplayAction(DisplayAction::MoveMouseOver(_, _)) => {
-                todo!()
+            InternalAction::DisplayAction(DisplayAction::MoveMouseOver(handle, force)) => {
+                let handle = handle.0 .0;
+                if Some(handle) != self.focused_window || force {
+                    let window = self.window_registry.get(handle).unwrap();
+                    let geometry = window.data.read().unwrap().geometry.unwrap();
+                    let center =
+                        Point::<i32, Logical>::from((geometry.size.w / 2, geometry.size.h / 2));
+                    self.pointer_location = geometry.loc.to_f64() + center.to_f64();
+                }
             }
-            InternalAction::DisplayAction(DisplayAction::MoveMouseOverPoint(_)) => {
-                todo!()
+            InternalAction::DisplayAction(DisplayAction::MoveMouseOverPoint(point)) => {
+                self.pointer_location = Point::from(point).to_f64();
             }
             InternalAction::DisplayAction(DisplayAction::SetState(_, _, _)) => {
                 todo!()
