@@ -24,10 +24,10 @@ use smithay::{
         input::{Led, Libinput},
         wayland_server::Display,
     },
-    utils::{Rectangle, SERIAL_COUNTER},
+    utils::SERIAL_COUNTER,
 };
 use tokio::sync::oneshot;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use crate::state::{CalloopData, SmithayState};
 mod drawing;
@@ -107,15 +107,16 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
 
             let libinput_backend = LibinputInputBackend::new(libinput_context.clone());
 
+            // TODO: Proper key handling
             event_loop
                 .handle()
-                .insert_source(libinput_backend, move |event, _, calloopdata| {
+                .insert_source(libinput_backend, move |event, _, data| {
                     match event {
                         InputEvent::Keyboard { event, .. } => {
                             let serial = SERIAL_COUNTER.next_serial();
                             let time = Event::time_msec(&event);
-                            if let Some(vt) = calloopdata.state.seat.get_keyboard().unwrap().input(
-                                &mut calloopdata.state,
+                            if let Some(vt) = data.state.seat.get_keyboard().unwrap().input(
+                                &mut data.state,
                                 event.key_code(),
                                 event.state(),
                                 serial,
@@ -152,20 +153,28 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                                                 as i32;
                                             return FilterResult::Intercept(vt);
                                         }
+                                    } else if event.state() == KeyState::Released {
+                                        let mut leds = Led::empty();
+                                        if modifiers.caps_lock {
+                                            leds.insert(Led::CAPSLOCK);
+                                        }
+                                        if modifiers.num_lock {
+                                            leds.insert(Led::NUMLOCK);
+                                        }
+                                        event.device().led_update(leds);
                                     }
                                     FilterResult::Forward
                                 },
                             ) {
-                                calloopdata.state.udev_data.session.change_vt(vt).unwrap();
+                                data.state.udev_data.session.change_vt(vt).unwrap();
                             };
                         }
                         InputEvent::PointerMotion { event } => {
-                            calloopdata
-                                .state
-                                .on_pointer_move::<LibinputInputBackend>(event);
+                            data.state.on_pointer_move::<LibinputInputBackend>(event);
                         }
                         InputEvent::PointerMotionAbsolute { event } => {
-                            todo!()
+                            data.state
+                                .on_pointer_move_absolute::<LibinputInputBackend>(event)
                         }
                         InputEvent::DeviceAdded { mut device } => {
                             device.config_tap_set_enabled(true).ok();
@@ -229,133 +238,7 @@ impl DisplayServer<SmithayWindowHandle> for SmithayDisplayServer {
                 .handle()
                 .insert_source(action_receiver, |event, _, data| match event {
                     channel::Event::Msg(act) => {
-                        // info!("Received action from leftwm: {:#?}", act);
-                        match act {
-                            InternalAction::Flush => data.display.flush_clients().unwrap(),
-                            InternalAction::GenerateVerifyFocusEvent => {
-                                if let Some(handle) = data.state.focused_window {
-                                    data.state
-                                        .send_event(DisplayEvent::VerifyFocusedAt(WindowHandle(
-                                            SmithayWindowHandle(handle),
-                                        )))
-                                        .unwrap();
-                                }
-                            } //NOTE: We should probably send an event too when nothing is focused
-                            InternalAction::UpdateConfig(config) => data.state.config = config,
-                            InternalAction::UpdateWindows(windows) => {
-                                info!("Received window update: {:#?}", windows);
-                                for window in windows {
-                                    let managed_window = data
-                                        .state
-                                        .window_registry
-                                        .get_mut(window.handle.0 .0)
-                                        .unwrap();
-
-                                    let border_width = data.state.config.borders.border_width;
-                                    // let border_width = 0;
-                                    let loc =
-                                        (window.x() + border_width, window.y() + border_width)
-                                            .into();
-                                    let size = (
-                                        window.width() - 2 * border_width,
-                                        window.height() - 2 * border_width,
-                                    )
-                                        .into();
-                                    managed_window.set_geometry(Rectangle { loc, size });
-
-                                    let mut managed_window_data =
-                                        managed_window.data.write().unwrap();
-
-                                    managed_window_data.floating = window.floating();
-                                    managed_window_data.visible = window.visible();
-
-                                    managed_window
-                                        .window
-                                        .toplevel()
-                                        .with_pending_state(|state| {
-                                            state.size =
-                                                Some((window.width(), window.height()).into());
-                                        });
-                                    managed_window.window.toplevel().send_configure();
-                                }
-                            }
-                            InternalAction::DisplayAction(DisplayAction::KillWindow(_)) => {
-                                todo!()
-                            }
-                            InternalAction::DisplayAction(DisplayAction::AddedWindow(
-                                handle,
-                                floating,
-                                focus,
-                            )) => {
-                                let window =
-                                    data.state.window_registry.get_mut(handle.0 .0).unwrap();
-                                let mut window_data = window.data.write().unwrap();
-                                window_data.floating = floating;
-                                window_data.managed = true;
-                                drop(window_data);
-                                if focus {
-                                    data.state.focus_window(handle.0 .0, true);
-                                }
-                            }
-                            InternalAction::DisplayAction(DisplayAction::MoveMouseOver(_, _)) => {
-                                todo!()
-                            }
-                            InternalAction::DisplayAction(DisplayAction::MoveMouseOverPoint(_)) => {
-                                todo!()
-                            }
-                            InternalAction::DisplayAction(DisplayAction::SetState(_, _, _)) => {
-                                todo!()
-                            }
-                            InternalAction::DisplayAction(DisplayAction::SetWindowOrder(_)) => {
-                                //TODO: no `todo!()` here because crash
-                            }
-                            InternalAction::DisplayAction(DisplayAction::MoveToTop(_)) => {
-                                todo!()
-                            }
-                            InternalAction::DisplayAction(DisplayAction::DestroyedWindow(_)) => {
-                                todo!()
-                            }
-                            InternalAction::DisplayAction(DisplayAction::WindowTakeFocus {
-                                window,
-                                previous_window: _,
-                            }) => {
-                                data.state.focus_window(
-                                    window.handle.0 .0,
-                                    data.state.config.sloppy_mouse_follows_focus,
-                                );
-                            }
-                            InternalAction::DisplayAction(DisplayAction::Unfocus(_, _)) => {
-                                todo!()
-                            }
-                            InternalAction::DisplayAction(
-                                DisplayAction::FocusWindowUnderCursor,
-                            ) => {
-                                data.state.focus_window_under();
-                            }
-                            InternalAction::DisplayAction(DisplayAction::ReplayClick(_, _)) => {
-                                todo!()
-                            }
-                            InternalAction::DisplayAction(DisplayAction::ReadyToResizeWindow(
-                                _,
-                            )) => {
-                                todo!()
-                            }
-                            InternalAction::DisplayAction(DisplayAction::ReadyToMoveWindow(_)) => {
-                                todo!()
-                            }
-                            InternalAction::DisplayAction(DisplayAction::SetCurrentTags(_)) => {
-                                //TODO: no `todo!()` here because crash
-                            }
-                            InternalAction::DisplayAction(DisplayAction::SetWindowTag(..)) => {}
-                            InternalAction::DisplayAction(DisplayAction::NormalMode) => {
-                                todo!()
-                            }
-                            InternalAction::DisplayAction(DisplayAction::ConfigureXlibWindow(
-                                _,
-                            )) => {
-                                todo!()
-                            }
-                        }
+                        data.state.handle_action(act, &mut data.display);
                     }
                     channel::Event::Closed => {
                         info!("LeftWM closed the channel, assuming we're exiting.");
