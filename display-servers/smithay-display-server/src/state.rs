@@ -16,6 +16,7 @@ use smithay::{
     utils::{Clock, Logical, Monotonic, Point, Rectangle, SERIAL_COUNTER},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        data_device::DataDeviceState,
         shell::{
             wlr_layer::WlrLayerShellState,
             xdg::{decoration::XdgDecorationState, XdgShellState},
@@ -54,8 +55,7 @@ pub struct SmithayState {
     pub xdg_shell_state: XdgShellState,
     pub xdg_decoration_state: XdgDecorationState,
     pub shm_state: ShmState,
-    // output_manager_State
-    // data_device_state
+    pub data_device_state: DataDeviceState,
     // primary_selection_state
     pub seat_state: SeatState<Self>,
     pub layer_shell_state: WlrLayerShellState,
@@ -103,6 +103,7 @@ impl SmithayState {
         let mut seat_state = SeatState::new();
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
+        let data_device_state = DataDeviceState::new::<Self>(&dh);
         let screencopy_state = ScreencopyManagerState::new::<Self>(&dh);
         let xdg_output_manager_state = XdgOutputManagerState::new::<Self>(&dh);
 
@@ -137,6 +138,7 @@ impl SmithayState {
             xdg_shell_state,
             xdg_decoration_state,
             shm_state,
+            data_device_state,
             seat_state,
             layer_shell_state,
             screencopy_state,
