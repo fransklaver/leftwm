@@ -77,6 +77,17 @@ impl<C: Config, SERVER: DisplayServer> Manager<C, SERVER> {
         } else {
             self.get_next_or_previous_handle(handle)
         };
+        if self.state.focus_manager.behaviour.is_sloppy()
+            && self.state.focus_manager.sloppy_mouse_follows_focus
+        {
+            let action = new_handle
+                .as_ref()
+                .map_or_else(|| None, |h| Some(DisplayAction::MoveMouseOver(*h, true)));
+            if let Some(action) = action {
+                self.state.actions.push_back(action);
+            }
+        }
+
         // If there is a parent we would want to focus it.
         let (transient, floating, visible) =
             match self.state.windows.iter().find(|w| &w.handle == handle) {
