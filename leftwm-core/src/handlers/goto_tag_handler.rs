@@ -1,3 +1,4 @@
+use crate::display_action::DisplayAction;
 use crate::{models::TagId, state::State};
 
 impl State {
@@ -19,6 +20,17 @@ impl State {
         }
         if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.tag == new_tag) {
             ws.tag = Some(old_tag);
+        }
+
+        if self.focus_manager.behaviour.is_sloppy() && self.focus_manager.sloppy_mouse_follows_focus
+        {
+            let action = new_tag
+                .as_ref()
+                .and_then(|tag| self.focus_manager.tags_last_window.get(tag))
+                .map_or_else(|| None, |h| Some(DisplayAction::MoveMouseOver(*h, true)));
+            if let Some(action) = action {
+                self.actions.push_back(action);
+            }
         }
 
         self.focus_manager.workspace_mut(&mut self.workspaces)?.tag = new_tag;
