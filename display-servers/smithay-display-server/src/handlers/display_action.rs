@@ -6,14 +6,14 @@ use smithay::{
     reexports::wayland_server::Display,
     utils::{Logical, Point, Rectangle},
 };
-use tracing::{info, warn};
+use tracing::{info, trace, warn};
 
 use crate::{internal_action::InternalAction, state::SmithayState, SmithayWindowHandle};
 
 impl SmithayState {
     // info!("Received action from leftwm: {:#?}", act);
     pub fn handle_action(&mut self, action: InternalAction, display: &mut Display<Self>) {
-        info!("Received action: {:?}", action);
+        trace!("Received action: {:?}", action);
         match action {
             InternalAction::Flush => display.flush_clients().unwrap(),
             InternalAction::GenerateVerifyFocusEvent => {
