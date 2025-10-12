@@ -1,8 +1,7 @@
 //! Starts leftwm programs.
 //!
-//! If no arguments are passed, starts `leftwm-worker`. If arguments are passed, starts
+//! If no arguments are passed, starts `leftway-worker`. If arguments are passed, starts
 //! `leftwm-{check, command, state, theme}` as specified, and passes along any extra arguments.
-
 use clap::command;
 use leftwm_core::child_process::{self, Nanny};
 use std::env;
@@ -21,12 +20,13 @@ const SUBCOMMAND_PREFIX: &str = "leftwm-";
 
 const SUBCOMMAND_NAME_INDEX: usize = 0;
 const SUBCOMMAND_DESCRIPTION_INDEX: usize = 1;
-const AVAILABLE_SUBCOMMANDS: [[&str; 2]; 5] = [
+const AVAILABLE_SUBCOMMANDS: [[&str; 2]; 6] = [
     ["check", "Check syntax of the configuration file"],
     ["command", "Send external commands to LeftWM"],
     ["state", "Print the current state of LeftWM"],
     ["theme", "Manage LeftWM themes"],
     ["config", "Manage LeftWM configuration file"],
+    ["log", "Retrieves information logged by leftway-worker"],
 ];
 
 fn main() {
@@ -125,13 +125,15 @@ fn parse_subcommands(args: &LeftwmArgs) -> ! {
 }
 
 /// Sets some relevant environment variables for leftwm
+// The use of `unsafe` is needed here as the environment
+// isn't protected against race conditions by the OS
+// We need to ensure to only use this single-threaded
+#[allow(unsafe_code)]
 fn set_env_vars() {
-    unsafe {
-        env::set_var("XDG_CURRENT_DESKTOP", "LeftWM");
+    unsafe { env::set_var("XDG_CURRENT_DESKTOP", "LeftWM") };
 
-        // Fix for Java apps so they repaint correctly
-        env::set_var("_JAVA_AWT_WM_NONREPARENTING", "1");
-    }
+    // Fix for Java apps so they repaint correctly
+    unsafe { env::set_var("_JAVA_AWT_WM_NONREPARENTING", "1") };
 }
 
 fn get_current_exe() -> std::path::PathBuf {
@@ -156,6 +158,7 @@ fn get_current_exe() -> std::path::PathBuf {
 fn start_leftwm() {
     let current_exe = get_current_exe();
 
+    // This call must happen before any child processes are created
     set_env_vars();
 
     // Boot everything WM agnostic or LeftWM related in ~/.config/autostart
@@ -163,30 +166,38 @@ fn start_leftwm() {
 
     let flag = get_sigchld_flag();
 
-    let mut leftwm_session = start_leftwm_session(&current_exe);
+    let mut error_occured = false;
+    let mut session_exit_status: Option<ExitStatus> = None;
+    while !error_occured {
+        let mut leftwm_session = start_leftwm_session(&current_exe);
+        #[cfg(feature = "lefthk")]
+        let mut lefthk_session = start_lefthk_session(&current_exe);
 
-    while session_is_running(&mut leftwm_session) {
-        // remove all child processes which finished
-        children.remove_finished_children();
+        while session_is_running(&mut leftwm_session) {
+            // remove all child processes which finished
+            children.remove_finished_children();
 
-        while is_suspending(&flag) {
-            nix::unistd::pause();
+            while is_suspending(&flag) {
+                nix::unistd::pause();
+            }
         }
-    }
 
-    // we don't want a rougue lefthk session so we kill it when the leftwm one ended
+        // we don't want a rougue lefthk session so we kill it when the leftwm one ended
+        #[cfg(feature = "lefthk")]
+        kill_lefthk_session(&mut lefthk_session);
 
-    let session_exit_status = get_exit_status(&mut leftwm_session);
-    let error_occured = check_error_occured(session_exit_status);
+        session_exit_status = get_exit_status(&mut leftwm_session);
+        error_occured = check_error_occured(session_exit_status);
 
-    // TODO: either add more details or find a better workaround.
-    //
-    // Left is too fast for some login managers. We need to
-    // wait to give the login manager a second to boot.
-    #[cfg(feature = "slow-dm-fix")]
-    {
-        let delay = std::time::Duration::from_millis(2000);
-        std::thread::sleep(delay);
+        // TODO: either add more details or find a better workaround.
+        //
+        // Left is too fast for some login managers. We need to
+        // wait to give the login manager a second to boot.
+        #[cfg(feature = "slow-dm-fix")]
+        {
+            let delay = std::time::Duration::from_millis(2000);
+            std::thread::sleep(delay);
+        }
     }
 
     if error_occured {
@@ -214,6 +225,28 @@ fn start_leftwm_session(current_exe: &Path) -> Child {
     Command::new(worker_file)
         .spawn()
         .expect("failed to start leftwm")
+}
+
+/// Starts the lefthk session and returns the process/lefthk-session
+#[cfg(feature = "lefthk")]
+fn start_lefthk_session(current_exe: &Path) -> Child {
+    let worker_file = current_exe.with_file_name("lefthk-worker");
+
+    Command::new(worker_file)
+        .spawn()
+        .expect("failed to start lefthk")
+}
+
+/// Kills the lefthk session
+#[cfg(feature = "lefthk")]
+fn kill_lefthk_session(lefthk_session: &mut Child) {
+    if lefthk_session.kill().is_ok() {
+        while lefthk_session
+            .try_wait()
+            .expect("failed to reap lefthk")
+            .is_none()
+        {}
+    }
 }
 
 /// The SIGCHLD can be set by the children of leftwm if their window need a refresh for example.
