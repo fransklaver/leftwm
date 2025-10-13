@@ -19,6 +19,10 @@ required-features = ["lefthk"]
 name = "leftwm"
 required-features = ["leftwm-watchdog"]
 
+[[bin]]
+name = "leftway"
+required-features = ["leftway-watchdog"]
+
 [dependencies]
 anyhow = "1.0.48"
 clap = { version = "4.5.0", features = ["cargo"] }
@@ -91,3 +95,6 @@ slow-dm-fix = []
 
 # Whether to include `leftwm` binary
 leftwm-watchdog = []
+
+# Whether to include `leftway` binary
+leftway-watchdog = []
