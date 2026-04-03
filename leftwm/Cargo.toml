@@ -1,6 +1,6 @@
 [package]
 name = "leftwm"
-version = "0.5.4"
+version = "0.5.5"
 rust-version = "1.88.0" # MSRV MINIMUM SUPPORTED RUST VERSION
 authors = ["Lex Childs <lexchilds@gmail.com>"]
 categories = ["gui"]
